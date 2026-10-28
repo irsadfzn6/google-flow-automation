@@ -1,0 +1,51 @@
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Environment and Credentials (Strict Security Policy)
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+.secrets/
+credentials/
+auth/
+token*.json
+crenox-master.db*
+crenox-master.log*
+.crenox/
+
+# Chrome User Profiles and Sessions
+.config/
+google-chrome-flow/
+chrome-profile/
+user-data-dir/
+
+# Generated Media Outputs
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+outputs/
+assets/videos/
+assets/images/
+assets/frames/
+!templates/**
+
+# Logs and Diagnostics
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

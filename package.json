@@ -1,0 +1,57 @@
+{
+  "name": "google-flow-automation",
+  "version": "1.0.0",
+  "description": "Universal declarative CLI, autonomous agent, and Node.js SDK for Google Flow (flow.google.com) AI video and image generation",
+  "main": "src/index.js",
+  "bin": {
+    "google-flow-cli": "./bin/flow.js",
+    "flow": "./bin/flow.js",
+    "google-flow": "./bin/flow.js",
+    "flow-mcp": "./bin/flow-mcp.js"
+  },
+  "files": [
+    "src",
+    "bin",
+    "schemas",
+    "templates",
+    "references",
+    "scripts",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/irsadfzn6/google-flow-automation.git"
+  },
+  "bugs": {
+    "url": "https://github.com/irsadfzn6/google-flow-automation/issues"
+  },
+  "homepage": "https://github.com/irsadfzn6/google-flow-automation#readme",
+  "keywords": [
+    "google-flow",
+    "flow-cli",
+    "video-generation",
+    "ai-video",
+    "ai-image",
+    "playwright",
+    "cdp",
+    "automation",
+    "veo",
+    "omni",
+    "banana",
+    "motion-graphics"
+  ],
+  "author": "irsadfzn6",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "test": "node scripts/validate-schema.js && node bin/flow.js doctor",
+    "lint": "node -c src/index.js bin/flow.js src/mcp.js bin/flow-mcp.js",
+    "validate:schema": "node scripts/validate-schema.js"
+  },
+  "optionalDependencies": {
+    "playwright": ">=1.40.0"
+  }
+}
