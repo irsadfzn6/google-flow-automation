@@ -15,6 +15,7 @@ function parseArgs() {
     aspect: null,       // '16:9', '9:16', '1:1'
     duration: "8s",
     resolution: "720p",
+    ingredients: null,  // comma-separated character names or paths
     outputDir: path.resolve(__dirname, "../outputs")
   };
 
@@ -32,6 +33,8 @@ function parseArgs() {
       options.duration = args[++i];
     } else if (arg === "--resolution" && args[i + 1]) {
       options.resolution = args[++i];
+    } else if ((arg === "--ingredients" || arg === "--ingredient") && args[i + 1]) {
+      options.ingredients = args[++i];
     } else if (arg === "--outputDir" && args[i + 1]) {
       options.outputDir = path.resolve(args[++i]);
     }
@@ -95,7 +98,7 @@ async function main() {
     const ext = isImage ? "png" : "mp4";
     const targetFile = path.join(options.outputDir, `${options.type}_${timestamp}.${ext}`);
 
-    console.log(`[Assistant] Menjalankan scene: Type=${options.type}, Model=${options.model || defaultModel}, Aspect=${defaultAspect}...`);
+    console.log(`[Assistant] Menjalankan scene: Type=${options.type}, Model=${options.model || defaultModel}, Aspect=${defaultAspect}, Ingredients=${options.ingredients || 'none'}...`);
     console.log(`[Assistant] Prompt: "${options.prompt}"`);
 
     const result = await client.runScene({
@@ -104,6 +107,7 @@ async function main() {
       aspect: defaultAspect,
       duration: isImage ? undefined : options.duration,
       resolution: isImage ? undefined : options.resolution,
+      ingredients: options.ingredients,
       prompt: options.prompt,
       generate: true,
       wait: true,

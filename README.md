@@ -7,6 +7,8 @@ Autonomous browser automation agent, CLI, and programmatic Node.js SDK for **Goo
 ## ⚡ Key Features
 
 - **Autonomous Agent Integration (`generate-assistant.js`)**: Pass prompts directly to generate videos and images and auto-download them locally.
+- **Character Reference & Consistency (Ingredients)**: Automatically attaches character references (`rakyat`, `kaisar`, `prajurit`, `barbar`, `jenderal`, `remaja`, or custom image paths) to keep character visuals 100% consistent across shots.
+- **YouTube Project Batch Automation (`generate-youtube-batch.js`)**: Directly parses `prompts-siap-pakai.md`, manages character ingredients, switches between Image (Nano Banana 2.1) and Video (Veo 3.1 4s), and organizes downloads per scene (`adeganX/shot_XXX`).
 - **Permanent Login (Zero Bot Flags)**: Connects directly to native Google Chrome via Chrome DevTools Protocol (CDP) on port 9222.
 - **Windows One-Click Launcher (`launch-flow-chrome.bat`)**: Launches Google Chrome on port 9222 with an isolated user profile.
 - **AI Models Supported**:
@@ -25,16 +27,28 @@ launch-flow-chrome.bat
 ```
 Log in to your Google Account on `flow.google.com` once.
 
-### 2. Autonomous Prompt Generation
+### 2. Autonomous Prompt Generation (with Character Consistency)
 ```bash
-# Generate image
-node generate-assistant.js --type image --prompt "A cute orange astronaut cat in earth orbit, cinematic 8k"
+# Generate image with a character reference
+node generate-assistant.js --type image --ingredients "rakyat" --prompt "A stickman teacher pointing at a Roman map"
 
-# Generate video
-node generate-assistant.js --type video --prompt "Cinematic drone flythrough of a cybernetic neon city in rain"
+# Generate video with multiple character references
+node generate-assistant.js --type video --ingredients "remaja, jenderal" --prompt "A young stickman emperor being dethroned by a general"
 ```
 
-### 3. CLI Commands
+### 3. YouTube Batch Generator (`roma-runtuh`)
+```bash
+# Dry run check (preview parsed shots, characters & models)
+node generate-youtube-batch.js --dry-run --shots 1-5
+
+# Generate a specific shot
+node generate-youtube-batch.js --shot 4
+
+# Generate an entire scene (Adegan 1)
+node generate-youtube-batch.js --adegan 1
+```
+
+### 4. CLI Commands
 ```bash
 # Environment diagnostics
 node bin/flow.js doctor
