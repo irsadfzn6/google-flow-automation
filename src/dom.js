@@ -299,50 +299,209 @@ async function setKeyframe(page, type, { filePath, index }) {
 }
 
 /**
- * Scans video elements and virtual-scroll tiles, returning signed Cloud CDN URLs.
+ * Adds an ingredient or character reference to the prompt box.
+ * Accepts either a local image file path or an asset/character name already in the project library.
  */
-async function getVideos(page) {
+async function addIngredient(page, nameOrPath) {
+  if (!nameOrPath) return false;
+  await dismissOverlays(page);
+
+  const addBtn = await page.$(
+    "button.add-menu-trigger, button[aria-label*='Tambahkan bahan'], button[aria-label*='ingredient'], button[aria-label*='Add ingredient']"
+  );
+  if (!addBtn) {
+    throw new Error("Add ingredient button (button.add-menu-trigger) not found on page.");
+  }
+
+  await addBtn.click();
+  await page.waitForTimeout(700);
+
+  // Check if nameOrPath is a local file path
+  let isFilePath = false;
+  try {
+    if (fs.existsSync(path.resolve(nameOrPath))) {
+      isFilePath = true;
+    }
+  } catch (e) {}
+
+  if (isFilePath) {
+    const absPath = path.resolve(nameOrPath);
+    const uploadBtn = await page.$(
+      ".cdk-overlay-pane button.sidebar-upload-btn, " +
+      ".cdk-overlay-pane button:has-text('Upload media'), " +
+      ".cdk-overlay-pane button:has-text('Upload'), " +
+      "button[aria-label*='Upload']"
+    );
+    if (!uploadBtn) {
+      await dismissOverlays(page);
+      throw new Error("Upload media button not found in ingredients overlay.");
+    }
+
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent("filechooser", { timeout: 15000 }),
+      uploadBtn.click()
+    ]);
+    await fileChooser.setFiles(absPath);
+    await page.waitForTimeout(2800);
+
+    const assetItem = await page.$(".cdk-overlay-pane .asset-item, .asset-list-item");
+    if (assetItem) {
+      await assetItem.click();
+      await page.waitForTimeout(400);
+    }
+  } else {
+    // Treat as character or asset name
+    const cleanName = nameOrPath.toLowerCase().replace(/\.png$/i, "").replace(/\.jpg$/i, "").trim();
+
+    // 1. Try clicking 'Karakter' in category sidebar
+    const karakterNav = await page.$(
+      ".cdk-overlay-pane mat-list-item:has-text('Karakter'), " +
+      ".cdk-overlay-pane [role='listitem']:has-text('Karakter')"
+    );
+    if (karakterNav) {
+      await karakterNav.click();
+      await page.waitForTimeout(400);
+    }
+
+    // 2. Find asset item matching cleanName
+    let items = await page.$$(".cdk-overlay-pane .asset-item");
+    let matchedItem = null;
+
+    for (const item of items) {
+      const text = (await item.innerText()).toLowerCase();
+      if (text.includes(cleanName)) {
+        matchedItem = item;
+        break;
+      }
+    }
+
+    // If not found in Karakter category, try 'Semua' (All)
+    if (!matchedItem) {
+      const allNav = await page.$(
+        ".cdk-overlay-pane mat-list-item:has-text('Semua'), " +
+        ".cdk-overlay-pane [role='listitem']:has-text('Semua')"
+      );
+      if (allNav) {
+        await allNav.click();
+        await page.waitForTimeout(400);
+        items = await page.$$(".cdk-overlay-pane .asset-item");
+        for (const item of items) {
+          const text = (await item.innerText()).toLowerCase();
+          if (text.includes(cleanName)) {
+            matchedItem = item;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!matchedItem) {
+      await dismissOverlays(page);
+      throw new Error(`Asset or character ingredient '${nameOrPath}' not found in project library.`);
+    }
+
+    await matchedItem.click();
+    await page.waitForTimeout(400);
+  }
+
+  // Click 'Tambahkan ke perintah' / 'Add to prompt'
+  const confirmBtn = await page.$(
+    ".cdk-overlay-pane button.detail-add-to-prompt-btn, " +
+    ".cdk-overlay-pane button:has-text('Tambahkan ke perintah'), " +
+    ".cdk-overlay-pane button:has-text('Add to prompt')"
+  );
+  if (confirmBtn) {
+    await confirmBtn.click();
+    await page.waitForTimeout(500);
+  }
+
+  await dismissOverlays(page);
+  return true;
+}
+
+/**
+ * Clears all active ingredient chips in the prompt box.
+ */
+async function clearIngredients(page) {
+  await dismissOverlays(page);
+  let maxAttempts = 10;
+  while (maxAttempts > 0) {
+    maxAttempts--;
+    const chip = await page.$("flow-ingredient-chip");
+    if (!chip) break;
+
+    const container = await chip.$(".chip-container");
+    if (container) {
+      try {
+        await container.hover();
+        await page.waitForTimeout(200);
+      } catch (e) {}
+    }
+
+    const overlay = await chip.$(".hover-icon-overlay, .hover-icon, mat-icon:has-text('cancel')");
+    if (overlay) {
+      try {
+        await overlay.click();
+        await page.waitForTimeout(350);
+      } catch (e) {
+        break;
+      }
+    } else {
+      break;
+    }
+  }
+  return true;
+}
+
+/**
+ * Returns current active ingredient chips in the prompt box.
+ */
+async function getIngredients(page) {
+  return await page.evaluate(() => {
+    const chips = Array.from(document.querySelectorAll("flow-ingredient-chip"));
+    return chips.map((c, i) => {
+      const img = c.querySelector("img");
+      const badge = c.querySelector(".type-badge");
+      return {
+        index: i,
+        imgSrc: img ? img.src : null,
+        type: badge ? badge.innerText.trim() : null
+      };
+    });
+  });
+}
+
+/**
+ * Scans video and image elements and virtual-scroll tiles, returning signed Cloud CDN URLs.
+ */
+async function getMedia(page) {
   // Trigger virtual-scroll lazy mounting
-  const tiles = await page.$$("flow-video-tile, .video-tile, cdk-virtual-scroll-viewport flow-video-tile");
+  const tiles = await page.$$("flow-video-tile, flow-image-tile, .video-tile, .image-tile, cdk-virtual-scroll-viewport flow-video-tile, cdk-virtual-scroll-viewport flow-image-tile");
   for (let i = 0; i < Math.min(tiles.length, 12); i++) {
     try {
       await tiles[i].hover();
-      await page.waitForTimeout(80);
+      await page.waitForTimeout(60);
     } catch (e) {}
   }
 
   return await page.evaluate(() => {
-    const videoEls = Array.from(document.querySelectorAll("video"));
-    const tilesList = Array.from(document.querySelectorAll("flow-video-tile, .video-tile"));
-
     const results = [];
     const seen = new Set();
 
-    videoEls.forEach((v, idx) => {
-      const src = v.src || v.currentSrc;
-      if (src && !seen.has(src)) {
-        seen.add(src);
-        results.push({
-          index: idx,
-          url: src,
-          isGoogleCdn: src.includes("flow-content.google"),
-          hasSignature: src.includes("Signature="),
-          videoWidth: v.videoWidth || null,
-          videoHeight: v.videoHeight || null,
-          duration: v.duration || null
-        });
-      }
-    });
-
+    const tilesList = Array.from(document.querySelectorAll("flow-video-tile, flow-image-tile, .video-tile, .image-tile"));
     tilesList.forEach((t, tIdx) => {
+      const isVideo = t.tagName.toLowerCase().includes("video") || !!t.querySelector("video");
       const v = t.querySelector("video");
-      const src = v ? (v.src || v.currentSrc) : null;
+      const img = t.querySelector("img");
+      const src = v ? (v.src || v.currentSrc) : (img ? img.src : null);
+
       if (src && !seen.has(src)) {
         seen.add(src);
         results.push({
+          type: isVideo ? "video" : "image",
           tileIndex: tIdx,
           url: src,
-          isGoogleCdn: src.includes("flow-content.google"),
+          isGoogleCdn: src.includes("flow-content.google") || src.includes("flow.google.com/asb"),
           hasSignature: src.includes("Signature=")
         });
       }
@@ -350,6 +509,14 @@ async function getVideos(page) {
 
     return results;
   });
+}
+
+/**
+ * Scans video elements and virtual-scroll tiles, returning signed Cloud CDN URLs (backward compatibility).
+ */
+async function getVideos(page) {
+  const media = await getMedia(page);
+  return media.filter(m => m.type === "video");
 }
 
 /**
@@ -407,9 +574,16 @@ async function selectModel(page, modelName) {
 
   const modelTrigger = await page.$(
     ".cdk-overlay-pane button[aria-label='Select model family'], " +
+    ".cdk-overlay-pane button[aria-label='Pilih rangkaian model'], " +
+    ".cdk-overlay-pane button[aria-label*='model'], " +
     ".cdk-overlay-pane button.mat-mdc-menu-trigger"
   );
   if (!modelTrigger) throw new Error("Model selector dropdown button not found in settings overlay.");
+
+  const currentTriggerText = await modelTrigger.innerText();
+  if (currentTriggerText.toLowerCase().includes(target.toLowerCase())) {
+    return target;
+  }
 
   await modelTrigger.click();
   await page.waitForTimeout(400);
@@ -436,7 +610,7 @@ async function configureSettings(page, config = {}) {
   await dismissOverlays(page);
 
   const settingsBtn = await page.$(
-    "button[aria-label='Settings trigger'], button.settings-trigger-button, button[aria-label*='Settings'], button[aria-label*='Setelan'], button[aria-label*='Pengaturan']"
+    "button.settings-trigger-button, button[aria-label='Settings trigger'], button[aria-label='Pemicu setelan']"
   );
   if (!settingsBtn) throw new Error("Settings trigger button not found on page.");
 
@@ -761,6 +935,10 @@ module.exports = {
   getFlowSession,
   setPrompt,
   setKeyframe,
+  addIngredient,
+  clearIngredients,
+  getIngredients,
+  getMedia,
   getVideos,
   downloadUrl,
   normalizeModelName,

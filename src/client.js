@@ -257,7 +257,39 @@ class FlowClient {
   }
 
   /**
-   * Lists videos in project and extracts signed CDN URLs.
+   * Adds an ingredient or character reference to the prompt box.
+   */
+  async addIngredient(nameOrPath) {
+    const page = await this.connect();
+    return await dom.addIngredient(page, nameOrPath);
+  }
+
+  /**
+   * Clears all active ingredient chips in the prompt box.
+   */
+  async clearIngredients() {
+    const page = await this.connect();
+    return await dom.clearIngredients(page);
+  }
+
+  /**
+   * Returns current active ingredient chips in the prompt box.
+   */
+  async getIngredients() {
+    const page = await this.connect();
+    return await dom.getIngredients(page);
+  }
+
+  /**
+   * Lists videos and images in project and extracts signed CDN URLs.
+   */
+  async getMedia() {
+    const page = await this.connect();
+    return await dom.getMedia(page);
+  }
+
+  /**
+   * Lists videos in project and extracts signed CDN URLs (backward compatibility).
    */
   async getVideos() {
     const page = await this.connect();
@@ -265,9 +297,9 @@ class FlowClient {
   }
 
   /**
-   * Triggers video generation and optionally polls for completion.
+   * Triggers video or image generation and optionally polls for completion.
    */
-  async triggerGeneration({ wait = false, timeout = 300, download = null } = {}) {
+  async triggerGeneration({ mediaType = null, wait = false, timeout = 300, download = null } = {}) {
     const page = await this.connect();
     await dom.dismissOverlays(page);
 
@@ -286,40 +318,69 @@ class FlowClient {
       );
     }
 
-    const baselineVideos = await this.getVideos();
+    const baselineMedia = await this.getMedia();
+    const baselineUrls = new Set(baselineMedia.map((m) => m.url));
+
     await generateBtn.click();
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(2000);
 
     if (!wait) {
       return { status: "started" };
     }
 
+    const expectedType = mediaType ? (mediaType.toLowerCase().includes("image") ? "image" : "video") : null;
     const startTime = Date.now();
+
     while ((Date.now() - startTime) / 1000 < timeout) {
-      await page.waitForTimeout(5000);
+      await page.waitForTimeout(4000);
 
-      // Hover first tile to trigger lazy mounting
-      const firstTile = await page.$("flow-video-tile");
-      if (firstTile) {
-        try { await firstTile.hover(); } catch (e) {}
-      }
-
-      const currentStatus = await this.status();
-      const currentVideos = await this.getVideos();
-
-      // Check for freshly completed video
-      const newVideo = currentVideos.find((v) => !baselineVideos.some((b) => b.url === v.url));
-
-      if (newVideo && !currentStatus.hasSpinner) {
-        let downloadedFile = null;
-        if (download) {
-          downloadedFile = await dom.downloadUrl(page, newVideo.url, download);
-        }
+      // Check the top tile (index 0)
+      const topTileData = await page.evaluate(() => {
+        const firstTile = document.querySelector("flow-video-tile, flow-image-tile, .video-tile, .image-tile");
+        if (!firstTile) return null;
+        const isVideo = firstTile.tagName.toLowerCase().includes("video") || !!firstTile.querySelector("video");
+        const video = firstTile.querySelector("video");
+        const img = firstTile.querySelector("img");
+        const src = video ? (video.src || video.currentSrc) : (img ? img.src : null);
+        const hasSpinner = !!firstTile.querySelector("mat-spinner, mat-progress-spinner, .spinner, [class*='spin'], [class*='load']");
+        const isPlaceholder = !src || src.startsWith("data:") || src.includes("blank");
         return {
-          status: "completed",
-          video: newVideo,
-          download: downloadedFile
+          type: isVideo ? "video" : "image",
+          src,
+          hasSpinner,
+          isPlaceholder
         };
+      });
+
+      if (topTileData && topTileData.src && !topTileData.hasSpinner && !topTileData.isPlaceholder) {
+        if (!baselineUrls.has(topTileData.src)) {
+          if (!expectedType || topTileData.type === expectedType) {
+            const completedMedia = {
+              type: topTileData.type,
+              url: topTileData.src,
+              isGoogleCdn: topTileData.src.includes("flow-content.google") || topTileData.src.includes("flow.google.com/asb")
+            };
+
+            let downloadedFile = null;
+            if (download) {
+              let finalDownload = download;
+              if (completedMedia.type === "image" && finalDownload.endsWith(".mp4")) {
+                finalDownload = finalDownload.replace(/\.mp4$/, ".png");
+              } else if (completedMedia.type === "video" && (finalDownload.endsWith(".png") || finalDownload.endsWith(".jpg"))) {
+                finalDownload = finalDownload.replace(/\.(png|jpg)$/, ".mp4");
+              }
+              downloadedFile = await dom.downloadUrl(page, completedMedia.url, finalDownload);
+            }
+
+            return {
+              status: "completed",
+              media: completedMedia,
+              video: completedMedia.type === "video" ? completedMedia : null,
+              image: completedMedia.type === "image" ? completedMedia : null,
+              download: downloadedFile
+            };
+          }
+        }
       }
     }
 
@@ -358,24 +419,40 @@ class FlowClient {
       });
     }
 
-    // 2. Set Start Frame
+    // 2. Ingredients / Character references
+    if (options.clearIngredients || options.ingredients !== undefined) {
+      await this.clearIngredients();
+    }
+    if (options.ingredients) {
+      const ings = Array.isArray(options.ingredients)
+        ? options.ingredients
+        : options.ingredients.split(",").map((s) => s.trim()).filter(Boolean);
+      for (const ing of ings) {
+        if (ing.toLowerCase() !== "none" && !ing.toLowerCase().includes("tanpa karakter")) {
+          await this.addIngredient(ing);
+        }
+      }
+    }
+
+    // 3. Set Start Frame
     if (options.start) {
       await this.setKeyframe("Start", { filePath: options.start });
     }
 
-    // 3. Set End Frame
+    // 4. Set End Frame
     if (options.end) {
       await this.setKeyframe("End", { filePath: options.end });
     }
 
-    // 4. Set Prompt
-    if (options.prompt) {
+    // 5. Set Prompt
+    if (options.prompt !== undefined) {
       await this.setPrompt(options.prompt);
     }
 
-    // 5. Trigger generation if requested
+    // 6. Trigger generation if requested
     if (options.generate) {
       return await this.triggerGeneration({
+        mediaType: options.mediaType || options.media,
         wait: options.wait !== false,
         timeout: options.timeout || 300,
         download: options.output || null
