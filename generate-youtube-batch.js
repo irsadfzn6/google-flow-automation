@@ -32,13 +32,13 @@ function parsePromptsFile(filePath) {
     const line = lines[i].replace(/\r$/, "");
 
     // Match Adegan heading (e.g. ## Adegan 1 – Hook)
-    const adeganMatch = line.match(/^##\s+Adegan\s+(\d+)/i);
+    const adeganMatch = line.match(/^##+\s+Adegan\s+(\d+)/i);
     if (adeganMatch) {
       currentAdegan = parseInt(adeganMatch[1], 10);
     }
 
-    // Match Shot heading (e.g. ### Shot 001 [🖼️ GAMBAR - F: zoom in])
-    const shotMatch = line.match(/^###\s+Shot\s+(\d+)\s+\[([^\]]+)\]/i);
+    // Match Shot heading (e.g. ### Shot 001 [🖼️ GAMBAR - F: zoom in] or ### Shot 001 | Gambar Statis | Target: shot001.png)
+    const shotMatch = line.match(/^###\s+Shot\s+(\d+)(?:\s+\[([^\]]+)\]|\s*\|\s*([^|\n]+))/i);
     if (shotMatch) {
       if (currentShot) {
         currentShot.prompt = promptLines.join("\n").trim();
@@ -48,9 +48,9 @@ function parsePromptsFile(filePath) {
       }
 
       const shotNum = parseInt(shotMatch[1], 10);
-      const tagStr = shotMatch[2];
-      const isVideo = tagStr.toUpperCase().includes("VIDEO");
-      const isImage = tagStr.toUpperCase().includes("GAMBAR");
+      const tagStr = (shotMatch[2] || shotMatch[3] || "").trim();
+      const isVideo = tagStr.toUpperCase().includes("VIDEO") || tagStr.toUpperCase().includes("GERAK");
+      const isImage = tagStr.toUpperCase().includes("GAMBAR") || tagStr.toUpperCase().includes("IMAGE") || tagStr.toUpperCase().includes("STATIS");
 
       currentShot = {
         number: shotNum,
@@ -58,7 +58,7 @@ function parsePromptsFile(filePath) {
         adegan: currentAdegan || 1,
         rawTag: tagStr,
         mediaType: isVideo ? "video" : "image",
-        model: isVideo ? "Veo 3.1 - Fast" : "Nano Banana 2.1",
+        model: isVideo ? "Omni 1.1 Flash" : "Nano Banana 2.1",
         duration: isVideo ? "4s" : undefined,
         aspect: "16:9",
         narasi: "",
@@ -79,25 +79,26 @@ function parsePromptsFile(filePath) {
     }
 
     // Match Karakter Referensi
-    const refMatch = line.match(/^\s*-\s*\*\*📌 Referensi Karakter:\*\*\s*`?([^`\n]+)`?/i);
-    if (refMatch) {
-      const rawRef = refMatch[1].trim();
-      currentShot.charRefRaw = rawRef;
-
-      // Extract character names: rakyat, kaisar, prajurit, barbar, jenderal, remaja
-      const chars = [];
-      const known = ["rakyat", "kaisar", "prajurit", "barbar", "jenderal", "remaja"];
-      const lowerRef = rawRef.toLowerCase();
-
-      if (!lowerRef.includes("tanpa karakter")) {
-        for (const k of known) {
-          if (lowerRef.includes(k)) {
-            chars.push(k);
+    if (line.includes('Referensi Karakter') || line.includes('Reference Image') || line.includes('karakter acuan')) {
+      const parts = line.split(/(?:Referensi Karakter|Reference Image|Karakter Acuan)[:* ]+/i);
+      if (parts.length > 1) {
+        const rawRef = parts[1].replace(/[*`\r\n]/g, '').trim();
+        currentShot.charRefRaw = rawRef;
+        const chars = [];
+        const lowerRef = rawRef.toLowerCase();
+        if (!lowerRef.includes('tanpa karakter') && !lowerRef.includes('tidak memerlukan')) {
+          const fileMatches = rawRef.match(/([a-zA-Z0-9_\-]+(?:\.png)?)/g) || [];
+          const ignoreWords = ['unggah', 'sebagai', 'image', 'reference', 'di', 'flow', 'dan', 'atau', 'tidak', 'memerlukan', 'referensi', 'karakter', 'khusus', 'fokus', 'lingkungan', 'bencana', 'visual'];
+          for (const m of fileMatches) {
+            const clean = m.toLowerCase().replace(/\.png$/, '');
+            if (!ignoreWords.includes(clean) && clean.length > 2 && !chars.includes(clean)) {
+              chars.push(clean);
+            }
           }
         }
+        currentShot.characters = chars;
+        continue;
       }
-      currentShot.characters = chars;
-      continue;
     }
 
     // Match code block for prompt
@@ -140,7 +141,8 @@ function parseArgs() {
     dryRun: false,
     list: false,
     delay: 2000,
-    projectDir: DEFAULT_PROJECT_DIR
+    projectDir: DEFAULT_PROJECT_DIR,
+    overwrite: false
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -155,6 +157,8 @@ function parseArgs() {
       options.dryRun = true;
     } else if (arg === "--list" || arg === "-l") {
       options.list = true;
+    } else if (arg === "--overwrite" || arg === "-f") {
+      options.overwrite = true;
     } else if (arg === "--delay" && args[i + 1]) {
       options.delay = parseInt(args[++i], 10);
     } else if (arg === "--project-dir" && args[i + 1]) {
@@ -247,6 +251,12 @@ async function main() {
     const ext = s.mediaType === "video" ? "mp4" : "png";
     const outputFile = path.join(targetDir, `shot_${shotIdStr}.${ext}`);
 
+    if (!options.overwrite && fs.existsSync(outputFile) && fs.statSync(outputFile).size > 10000) {
+      console.log(`[SKIP] Shot ${shotIdStr} sudah ada: ${outputFile} (${(fs.statSync(outputFile).size / 1024).toFixed(1)} KB)`);
+      successCount++;
+      continue;
+    }
+
     console.log(`------------------------------------------------------------`);
     console.log(`[Proses ${i + 1}/${shotsToRun.length}] Shot ${shotIdStr} (Adegan ${s.adegan}) - ${s.mediaType.toUpperCase()}`);
     console.log(`- Narasi   : "${s.narasi}"`);
@@ -259,7 +269,10 @@ async function main() {
         model: s.model,
         aspect: s.aspect,
         duration: s.duration,
-        ingredients: s.characters,
+        ingredients: s.characters.map((c) => {
+          const pPng = path.join(options.projectDir, 'visual', 'karakter', c.endsWith('.png') ? c : `${c}.png`);
+          return fs.existsSync(pPng) ? pPng : c;
+        }),
         clearIngredients: true,
         prompt: s.prompt,
         generate: true,

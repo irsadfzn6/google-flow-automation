@@ -299,7 +299,7 @@ class FlowClient {
   /**
    * Triggers video or image generation and optionally polls for completion.
    */
-  async triggerGeneration({ mediaType = null, wait = false, timeout = 300, download = null } = {}) {
+  async triggerGeneration({ mediaType = null, wait = false, timeout = 300, download = null, upscale = true } = {}) {
     const page = await this.connect();
     await dom.dismissOverlays(page);
 
@@ -335,22 +335,42 @@ class FlowClient {
       await page.waitForTimeout(4000);
 
       // Check the top tile (index 0)
-      const topTileData = await page.evaluate(() => {
-        const firstTile = document.querySelector("flow-video-tile, flow-image-tile, .video-tile, .image-tile");
-        if (!firstTile) return null;
-        const isVideo = firstTile.tagName.toLowerCase().includes("video") || !!firstTile.querySelector("video");
-        const video = firstTile.querySelector("video");
-        const img = firstTile.querySelector("img");
-        const src = video ? (video.src || video.currentSrc) : (img ? img.src : null);
-        const hasSpinner = !!firstTile.querySelector("mat-spinner, mat-progress-spinner, .spinner, [class*='spin'], [class*='load']");
-        const isPlaceholder = !src || src.startsWith("data:") || src.includes("blank");
-        return {
-          type: isVideo ? "video" : "image",
-          src,
-          hasSpinner,
-          isPlaceholder
-        };
-      });
+      let topTileData = null;
+      const firstTile = await page.$("flow-video-tile, flow-image-tile, .video-tile, .image-tile");
+      if (firstTile) {
+        const hasSpinner = await firstTile.evaluate((t) => {
+          return !!t.querySelector("mat-spinner, mat-progress-spinner, .spinner, [class*='spin'], [class*='load']");
+        });
+        if (!hasSpinner) {
+          const tagName = await firstTile.evaluate((t) => t.tagName.toLowerCase());
+          const isVideo = tagName.includes("video") || (expectedType === "video");
+
+          let src = null;
+          if (isVideo) {
+            // Hover over tile to mount <video> element with signed Cloud CDN MP4 URL
+            await firstTile.hover();
+            await page.waitForTimeout(600);
+            src = await firstTile.evaluate((t) => {
+              const v = t.querySelector("video");
+              return v ? (v.src || v.currentSrc) : null;
+            });
+          } else {
+            src = await firstTile.evaluate((t) => {
+              const img = t.querySelector("img");
+              return img ? img.src : null;
+            });
+          }
+
+          if (src && !src.startsWith("data:") && !src.includes("blank")) {
+            topTileData = {
+              type: isVideo ? "video" : "image",
+              src,
+              hasSpinner: false,
+              isPlaceholder: false
+            };
+          }
+        }
+      }
 
       if (topTileData && topTileData.src && !topTileData.hasSpinner && !topTileData.isPlaceholder) {
         if (!baselineUrls.has(topTileData.src)) {
@@ -369,7 +389,27 @@ class FlowClient {
               } else if (completedMedia.type === "video" && (finalDownload.endsWith(".png") || finalDownload.endsWith(".jpg"))) {
                 finalDownload = finalDownload.replace(/\.(png|jpg)$/, ".mp4");
               }
-              downloadedFile = await dom.downloadUrl(page, completedMedia.url, finalDownload);
+
+              let upscaleSuccess = false;
+              if (upscale !== false) {
+                try {
+                  const targetRes = completedMedia.type === "video" ? "1080p" : "2K";
+                  const dlEventPromise = page.waitForEvent("download", { timeout: 15000 }).catch(() => null);
+                  const upscaleRes = await dom.triggerUpscaleDownload(page, { mediaType: completedMedia.type, targetResolution: targetRes });
+                  if (upscaleRes && upscaleRes.success) {
+                    const dlEvent = await dlEventPromise;
+                    if (dlEvent) {
+                      await dlEvent.saveAs(finalDownload);
+                      upscaleSuccess = true;
+                      downloadedFile = { path: finalDownload, size: fs.statSync(finalDownload).size, upscale: targetRes };
+                    }
+                  }
+                } catch (e) {}
+              }
+
+              if (!upscaleSuccess) {
+                downloadedFile = await dom.downloadUrl(page, completedMedia.url, finalDownload);
+              }
             }
 
             return {
