@@ -1300,7 +1300,19 @@ async function configureSettings(page, config = {}) {
 
 
 
-  // 2. Mode: Frames vs Ingredients
+  // 2. Model Selection (Omni 1.1 Flash, Veo 3.1, Nano Banana)
+
+  if (config.model) {
+
+    const chosenModel = await selectModel(page, config.model);
+
+    if (chosenModel) applied.push(`model:${chosenModel}`);
+
+  }
+
+
+
+  // 3. Mode: Frames vs Ingredients
 
   if (config.mode) {
 
@@ -1320,7 +1332,7 @@ async function configureSettings(page, config = {}) {
 
 
 
-  // 3. Aspect Ratio: 9:16, 16:9, 1:1, 4:3, 3:4
+  // 4. Aspect Ratio: 9:16, 16:9, 1:1, 4:3, 3:4
 
   if (config.aspect) {
 
@@ -1335,18 +1347,6 @@ async function configureSettings(page, config = {}) {
       await page.waitForTimeout(250);
 
     }
-
-  }
-
-
-
-  // 4. Model Selection (Omni 1.1 Flash, Veo 3.1, Nano Banana)
-
-  if (config.model) {
-
-    const chosenModel = await selectModel(page, config.model);
-
-    if (chosenModel) applied.push(`model:${chosenModel}`);
 
   }
 
@@ -1372,11 +1372,11 @@ async function configureSettings(page, config = {}) {
 
 
 
-  // 6. Duration: 4s / 4 dtk, 8s / 8 dtk (video only, handles English and Indonesian locales)
+  // 6. Duration: 4s / 4 dtk, 8s / 8 dtk (video only, default to 4s if video to save credits)
+  const targetDuration = config.duration || ((config.mediaType === "video" || config.media === "video") ? "4s" : null);
+  if (targetDuration) {
 
-  if (config.duration) {
-
-    const durNum = String(config.duration).replace(/\D/g, '');
+    const durNum = String(targetDuration).replace(/\D/g, '');
 
     const durToggle = await page.$(
 
@@ -1396,7 +1396,7 @@ async function configureSettings(page, config = {}) {
 
       await durToggle.click();
 
-      applied.push(`duration:${config.duration}`);
+      applied.push(`duration:${targetDuration}`);
 
       await page.waitForTimeout(250);
 
@@ -1406,24 +1406,16 @@ async function configureSettings(page, config = {}) {
 
 
 
-  // 7. Multiplier / Batches: x1, x2, x3, x4
-
-  if (config.batches || config.batch) {
-
-    const batchVal = config.batches || config.batch;
-
-    const batchToggle = await page.$(`.cdk-overlay-pane mat-button-toggle:has-text('${batchVal}') button`);
-
-    if (batchToggle) {
-
-      await batchToggle.click();
-
-      applied.push(`batch:${batchVal}`);
-
-      await page.waitForTimeout(250);
-
-    }
-
+  // 7. Multiplier / Batches: ALWAYS strictly default to 'x1' (1 variation only) to prevent credit burn & save generation time
+  const batchVal = config.batches || config.batch || "x1";
+  const batchToggle = await page.$(
+    `.cdk-overlay-pane mat-button-toggle:has-text('${batchVal}') button, ` +
+    `.cdk-overlay-pane mat-button-toggle:has-text('1') button`
+  );
+  if (batchToggle) {
+    await batchToggle.click();
+    applied.push(`batch:${batchVal}`);
+    await page.waitForTimeout(250);
   }
 
 

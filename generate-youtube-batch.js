@@ -1,29 +1,34 @@
 /**
- * generate-youtube-batch.js - Batch Video & Image Generator for YouTube Project
- * Integrates Google Flow automation with 'roma-runtuh' prompts & characters
+ * batch.js - Autonomous Batch Video & Image Generator for YouTube (Long & Shorts)
+ * Integrates Google Flow automation via Chrome CDP (port 9222).
+ * Enforces strictly 1 variation (x1) and 4-second video clips to prevent credit waste.
  */
 
 const fs = require("fs");
 const path = require("path");
-const FlowClient = require("./src/client");
 
-// Default paths
-const DEFAULT_PROJECT_DIR = path.resolve("C:/Users/Dragon/Documents/proyek yt/roma-runtuh");
-const PROMPTS_FILE = path.join(DEFAULT_PROJECT_DIR, "prompts-siap-pakai.md");
+// Dynamic resolver for FlowClient
+const FlowClient = fs.existsSync(path.join(__dirname, "client.js"))
+  ? require("./client")
+  : (fs.existsSync(path.join(__dirname, "src", "client.js"))
+    ? require("./src/client")
+    : require(path.join(__dirname, "..", "..", "engine", "flow", "client")));
 
 /**
  * Parses prompts-siap-pakai.md into structured shot objects
  */
-function parsePromptsFile(filePath) {
+function parsePromptsFile(filePath, defaultAspect = "16:9") {
   if (!fs.existsSync(filePath)) {
     throw new Error(`Prompts file not found at: ${filePath}`);
   }
 
   const content = fs.readFileSync(filePath, "utf8");
-  const lines = content.split("\n");
+  const isVerticalProject = /9:16|vertical|shorts|portrait/i.test(content);
+  const projectAspect = isVerticalProject ? "9:16" : defaultAspect;
 
+  const lines = content.split("\n");
   const shots = [];
-  let currentAdegan = null;
+  let currentAdegan = 1;
   let currentShot = null;
   let inCodeBlock = false;
   let promptLines = [];
@@ -37,8 +42,8 @@ function parsePromptsFile(filePath) {
       currentAdegan = parseInt(adeganMatch[1], 10);
     }
 
-    // Match Shot heading (e.g. ### Shot 001 [🖼️ GAMBAR - F: zoom in] or ### Shot 001 | Gambar Statis | Target: shot001.png)
-    const shotMatch = line.match(/^###\s+Shot\s+(\d+)(?:\s+\[([^\]]+)\]|\s*\|\s*([^|\n]+))/i);
+    // Match Shot heading (e.g. ### Shot 001 [🖼️ GAMBAR] or ### Shot 001 | Video)
+    const shotMatch = line.match(/^###\s+Shot\s+(\d+)(?:\s+\[([^\]]+)\]|\s*\|\s*([^|\n]+))?/i);
     if (shotMatch) {
       if (currentShot) {
         currentShot.prompt = promptLines.join("\n").trim();
@@ -50,7 +55,7 @@ function parsePromptsFile(filePath) {
       const shotNum = parseInt(shotMatch[1], 10);
       const tagStr = (shotMatch[2] || shotMatch[3] || "").trim();
       const isVideo = tagStr.toUpperCase().includes("VIDEO") || tagStr.toUpperCase().includes("GERAK");
-      const isImage = tagStr.toUpperCase().includes("GAMBAR") || tagStr.toUpperCase().includes("IMAGE") || tagStr.toUpperCase().includes("STATIS");
+      const isShotVertical = tagStr.includes("9:16") || isVerticalProject;
 
       currentShot = {
         number: shotNum,
@@ -60,7 +65,8 @@ function parsePromptsFile(filePath) {
         mediaType: isVideo ? "video" : "image",
         model: isVideo ? "Omni 1.1 Flash" : "Nano Banana 2.1",
         duration: isVideo ? "4s" : undefined,
-        aspect: "16:9",
+        aspect: isShotVertical ? "9:16" : "16:9",
+        batches: "x1", // ALWAYS 1 variation only
         narasi: "",
         charRefRaw: "",
         characters: [],
@@ -79,18 +85,22 @@ function parsePromptsFile(filePath) {
     }
 
     // Match Karakter Referensi
-    if (line.includes('Referensi Karakter') || line.includes('Reference Image') || line.includes('karakter acuan')) {
+    if (line.includes("Referensi Karakter") || line.includes("Reference Image") || line.includes("karakter acuan")) {
       const parts = line.split(/(?:Referensi Karakter|Reference Image|Karakter Acuan)[:* ]+/i);
       if (parts.length > 1) {
-        const rawRef = parts[1].replace(/[*`\r\n]/g, '').trim();
+        const rawRef = parts[1].replace(/[*`\r\n]/g, "").trim();
         currentShot.charRefRaw = rawRef;
         const chars = [];
         const lowerRef = rawRef.toLowerCase();
-        if (!lowerRef.includes('tanpa karakter') && !lowerRef.includes('tidak memerlukan')) {
+        if (!lowerRef.includes("tanpa karakter") && !lowerRef.includes("tidak memerlukan")) {
           const fileMatches = rawRef.match(/([a-zA-Z0-9_\-]+(?:\.png)?)/g) || [];
-          const ignoreWords = ['unggah', 'sebagai', 'image', 'reference', 'di', 'flow', 'dan', 'atau', 'tidak', 'memerlukan', 'referensi', 'karakter', 'khusus', 'fokus', 'lingkungan', 'bencana', 'visual'];
+          const ignoreWords = [
+            "unggah", "sebagai", "image", "reference", "di", "flow", "dan", "atau",
+            "tidak", "memerlukan", "referensi", "karakter", "khusus", "fokus",
+            "lingkungan", "bencana", "visual"
+          ];
           for (const m of fileMatches) {
-            const clean = m.toLowerCase().replace(/\.png$/, '');
+            const clean = m.toLowerCase().replace(/\.png$/, "");
             if (!ignoreWords.includes(clean) && clean.length > 2 && !chars.includes(clean)) {
               chars.push(clean);
             }
@@ -133,7 +143,7 @@ function parsePromptsFile(filePath) {
  * CLI Argument parser
  */
 function parseArgs() {
-  const args = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
   const options = {
     adegan: null,
     shot: null,
@@ -141,30 +151,41 @@ function parseArgs() {
     dryRun: false,
     list: false,
     delay: 2000,
-    projectDir: DEFAULT_PROJECT_DIR,
-    overwrite: false
+    projectDir: process.cwd(),
+    overwrite: false,
+    aspect: null
   };
 
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--adegan" && args[i + 1]) {
-      options.adegan = parseInt(args[++i], 10);
-    } else if (arg === "--shot" && args[i + 1]) {
-      options.shot = parseInt(args[++i], 10);
-    } else if (arg === "--shots" && args[i + 1]) {
-      options.shots = args[++i]; // e.g. "1-5" or "1,2,3"
+  const positional = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (arg === "--adegan" && rawArgs[i + 1]) {
+      options.adegan = parseInt(rawArgs[++i], 10);
+    } else if (arg === "--shot" && rawArgs[i + 1]) {
+      options.shot = parseInt(rawArgs[++i], 10);
+    } else if (arg === "--shots" && rawArgs[i + 1]) {
+      options.shots = rawArgs[++i];
+    } else if (arg === "--aspect" && rawArgs[i + 1]) {
+      options.aspect = rawArgs[++i];
     } else if (arg === "--dry-run" || arg === "-d") {
       options.dryRun = true;
     } else if (arg === "--list" || arg === "-l") {
       options.list = true;
     } else if (arg === "--overwrite" || arg === "-f") {
       options.overwrite = true;
-    } else if (arg === "--delay" && args[i + 1]) {
-      options.delay = parseInt(args[++i], 10);
-    } else if (arg === "--project-dir" && args[i + 1]) {
-      options.projectDir = path.resolve(args[++i]);
+    } else if (arg === "--delay" && rawArgs[i + 1]) {
+      options.delay = parseInt(rawArgs[++i], 10);
+    } else if (arg === "--project-dir" && rawArgs[i + 1]) {
+      options.projectDir = path.resolve(rawArgs[++i]);
+    } else if (!arg.startsWith("-")) {
+      positional.push(arg);
     }
   }
+
+  if (positional.length > 0) {
+    options.projectDir = path.resolve(positional[0]);
+  }
+
   return options;
 }
 
@@ -202,9 +223,16 @@ async function main() {
   const options = parseArgs();
   const promptsPath = path.join(options.projectDir, "prompts-siap-pakai.md");
 
-  console.log(`[YouTube Batch] Membaca file prompts: ${promptsPath}`);
-  const allShots = parsePromptsFile(promptsPath);
-  console.log(`[YouTube Batch] Berhasil mem-parsing total ${allShots.length} shot dari file prompts.\n`);
+  console.log(`[Flow Batch] Mengakses direktori proyek: ${options.projectDir}`);
+  console.log(`[Flow Batch] Membaca file prompts: ${promptsPath}`);
+
+  if (!fs.existsSync(promptsPath)) {
+    console.error(`[Error] File prompts-siap-pakai.md tidak ditemukan di: ${promptsPath}`);
+    process.exit(1);
+  }
+
+  const allShots = parsePromptsFile(promptsPath, options.aspect || "16:9");
+  console.log(`[Flow Batch] Berhasil mem-parsing total ${allShots.length} shot.\n`);
 
   const shotsToRun = filterShots(allShots, options);
 
@@ -219,7 +247,7 @@ async function main() {
       const charStr = s.characters.length > 0 ? s.characters.join(", ") : "Tanpa Karakter";
       console.log(`- [Shot ${String(s.number).padStart(3, "0")}] Adegan ${s.adegan} | ${s.mediaType.toUpperCase()} | Karakter: [${charStr}]`);
       console.log(`  Narasi: "${s.narasi}"`);
-      console.log(`  Model: ${s.model} (${s.aspect}${s.duration ? ", " + s.duration : ""})`);
+      console.log(`  Model: ${s.model} (${s.aspect}${s.duration ? ", " + s.duration : ""}) | Variasi: 1 (x1)`);
       console.log(`  Prompt: ${s.prompt.substring(0, 100)}...`);
       console.log();
     });
@@ -231,11 +259,11 @@ async function main() {
   }
 
   // Connect to Google Flow
-  console.log(`[YouTube Batch] Menghubungkan ke Google Flow (CDP Port 9222)...`);
+  console.log(`[Flow Batch] Menghubungkan ke Google Flow (CDP Port 9222)...`);
   const client = new FlowClient({ port: 9222 });
   const page = await client.connect();
 
-  console.log(`[YouTube Batch] Memulai pemrosesan ${shotsToRun.length} shot...\n`);
+  console.log(`[Flow Batch] Memulai pemrosesan ${shotsToRun.length} shot (Strict: 1 variasi x1 per shot)...\n`);
 
   let successCount = 0;
   let failCount = 0;
@@ -243,8 +271,12 @@ async function main() {
   for (let i = 0; i < shotsToRun.length; i++) {
     const s = shotsToRun[i];
     const shotIdStr = String(s.number).padStart(3, "0");
-    const targetDir = path.join(options.projectDir, "visual", `adegan${s.adegan}`);
-    if (!fs.existsSync(targetDir)) {
+
+    // Check directory layout: either visual/adeganX or visual/shots or remotion/public/shots
+    let targetDir = path.join(options.projectDir, "visual", `adegan${s.adegan}`);
+    if (s.aspect === "9:16" && fs.existsSync(path.join(options.projectDir, "remotion", "public", "shots"))) {
+      targetDir = path.join(options.projectDir, "remotion", "public", "shots");
+    } else if (!fs.existsSync(targetDir)) {
       fs.mkdirSync(targetDir, { recursive: true });
     }
 
@@ -260,6 +292,7 @@ async function main() {
     console.log(`------------------------------------------------------------`);
     console.log(`[Proses ${i + 1}/${shotsToRun.length}] Shot ${shotIdStr} (Adegan ${s.adegan}) - ${s.mediaType.toUpperCase()}`);
     console.log(`- Narasi   : "${s.narasi}"`);
+    console.log(`- Model    : ${s.model} | Aspek: ${s.aspect} | Variasi: 1 (x1) | Durasi: ${s.duration || "N/A"}`);
     console.log(`- Karakter : ${s.characters.length > 0 ? s.characters.join(", ") : "None"}`);
     console.log(`- Target   : ${outputFile}`);
 
@@ -267,10 +300,11 @@ async function main() {
       const res = await client.runScene({
         mediaType: s.mediaType,
         model: s.model,
-        aspect: s.aspect,
-        duration: s.duration,
+        aspect: options.aspect || s.aspect,
+        duration: s.duration || (s.mediaType === "video" ? "4s" : undefined),
+        batches: "x1", // Strictly 1 variation to save credits and time
         ingredients: s.characters.map((c) => {
-          const pPng = path.join(options.projectDir, 'visual', 'karakter', c.endsWith('.png') ? c : `${c}.png`);
+          const pPng = path.join(options.projectDir, "visual", "karakter", c.endsWith(".png") ? c : `${c}.png`);
           return fs.existsSync(pPng) ? pPng : c;
         }),
         clearIngredients: true,
@@ -288,7 +322,37 @@ async function main() {
       successCount++;
     } catch (err) {
       console.error(`[GAGAL] Shot ${shotIdStr} error: ${err.message}`);
-      failCount++;
+
+      // Fallback: If video generation failed due to credit exhaustion, fall back to Nano Banana 2.1 static image
+      if (s.mediaType === "video" && (err.message.includes("poin") || err.message.includes("credit") || err.message.includes("quota"))) {
+        console.log(`[FALLBACK] Kuota video habis! Beralih otomatis ke GAMBAR STATIS Nano Banana 2.1 (0 kredit)...`);
+        try {
+          const fallbackOutputFile = path.join(targetDir, `shot_${shotIdStr}.png`);
+          const fbRes = await client.runScene({
+            mediaType: "image",
+            model: "Nano Banana 2.1",
+            aspect: options.aspect || s.aspect,
+            batches: "x1",
+            ingredients: s.characters.map((c) => {
+              const pPng = path.join(options.projectDir, "visual", "karakter", c.endsWith(".png") ? c : `${c}.png`);
+              return fs.existsSync(pPng) ? pPng : c;
+            }),
+            clearIngredients: true,
+            prompt: s.prompt,
+            generate: true,
+            wait: true,
+            timeout: 300,
+            output: fallbackOutputFile
+          });
+          console.log(`[FALLBACK BERHASIL] Shot ${shotIdStr} digenerate sebagai gambar: ${fallbackOutputFile}`);
+          successCount++;
+        } catch (fbErr) {
+          console.error(`[FALLBACK GAGAL] ${fbErr.message}`);
+          failCount++;
+        }
+      } else {
+        failCount++;
+      }
     }
 
     if (i < shotsToRun.length - 1 && options.delay > 0) {
@@ -298,13 +362,21 @@ async function main() {
   }
 
   console.log(`\n============================================================`);
-  console.log(`[YouTube Batch Selesai] Total: ${shotsToRun.length} | Berhasil: ${successCount} | Gagal: ${failCount}`);
+  console.log(`[Flow Batch Selesai] Total: ${shotsToRun.length} | Berhasil: ${successCount} | Gagal: ${failCount}`);
   console.log(`============================================================`);
 
   await client.disconnect();
 }
 
-main().catch((err) => {
-  console.error("[Fatal Error]", err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`[Fatal Error] ${err.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  parsePromptsFile,
+  filterShots,
+  main
+};
